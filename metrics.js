@@ -1,39 +1,29 @@
-const pg = require('pg')
+import { SQL } from "bun";
 
+export default class MetricsClient {
+  constructor() {
+    this.sql = new SQL({
+      adapter: "postgres",
+      hostname: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT) || 5432,
+      username: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      tls: {
+        rejectUnauthorized: false,
+      },
+      connectionTimeout: 10,
+      idleTimeout: 30,
+      max: 2,
+    });
+  }
 
-class MetricsClient {
-    constructor() {
-        this.pool = new pg.Pool({
-            host: process.env.DB_HOST,
-            port: process.env.DB_PORT,
-            user: process.env.DB_USER,
-            password: process.env.DB_PASSWORD,
-            database: process.env.DB_NAME,
-            ssl: {
-                rejectUnauthorized: false
-            },
-            connectionTimeoutMillis: 10000,
-            idleTimeoutMillis: 30000,
-            max: 2,
-        })
+  async stop() {
+    await this.sql.close();
+    console.log("Disconnected from metrics DB");
+  }
 
-        this.pool.on('error', (err, client) => {
-            console.log('PG pool error', err)
-        })
-    }
-
-    async stop() {
-        await this.pool.end()
-        console.log("Disconnected from metrics DB")
-    }
-
-    async addRequestCount(requestCount) {
-        const query = {
-            text: 'INSERT INTO api_proxy_request_count_metrics (time, request_count) VALUES ($1, $2)',
-            values: [new Date().toISOString(), requestCount],
-        }
-        await this.pool.query(query)
-    }
+  async addRequestCount(requestCount) {
+    await this.sql`INSERT INTO api_proxy_request_count_metrics (time, request_count) VALUES (${new Date().toISOString()}, ${requestCount})`;
+  }
 }
-
-module.exports = MetricsClient

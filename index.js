@@ -1,118 +1,76 @@
-const express = require('express');
-const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-const slowDown = require('express-slow-down')
-const errorHandler = require('./middleware/error');
-const MetricsClient = require('./metrics');
-const readline = require('readline');
-const { ToadScheduler, SimpleIntervalJob, AsyncTask } = require('toad-scheduler')
-
-const scheduler = new ToadScheduler()
-require('dotenv').config();
+import MetricsClient from "./metrics.js";
+import { clientIp, rateLimit } from "./ratelimit.js";
+import { handleRequest, startReleaseCacheUpdater, updateReleaseCache } from "./routes/index.js";
+import { logT } from "./log.js";
 
 const PORT = process.env.PORT || 5000;
+const RELEASES_LIST_CACHE_ENABLED = process.env.RELEASES_LIST_CACHE === "true";
+const metricsEnabled = process.env.METRICS === "true";
 
-const app = express();
+let reqCount = 0;
 
-// Rate Limiting
-const limiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 mins
-  max: 1000,
-});
-const speedLimiter = slowDown({
-  windowMs: 10 * 60 * 1000, // 10 mins
-  delayAfter: 800,
-  delayMs: () => 500,
-  maxDelayMs: 3000
-});
-app.use(limiter);
-app.use(speedLimiter)
-app.set('trust proxy', 1);
-
-function logT(msg) {
-  console.log(`${new Date().toISOString()} ${msg}`)
-}
-
-var reqCount = 0;
-
-const metricsClient = new MetricsClient()
-const metricsEnabled = process.env.METRICS !== undefined && process.env.METRICS === "true"
-
-const metricsTask = new AsyncTask('metrics', async () => {
-  try {
-    logT(`Request Count: ${reqCount}`)
-    let c = reqCount;
+function startMetrics() {
+  const metricsClient = new MetricsClient();
+  setInterval(async () => {
+    logT(`Request Count: ${reqCount}`);
+    const c = reqCount;
     reqCount = 0;
-    await metricsClient.addRequestCount(c).catch(err => {
-      logT("Error writing metrics: " + err)
-    });
-  } catch (err) {
-    logT("Error writing metrics: " + err)
-  }
-}, (err) => {
-  logT("Error in metrics task: " + err)
-})
-const metricsJob = new SimpleIntervalJob({ minutes: 5 }, metricsTask)
-
-async function startMetrics() {
-  if (metricsEnabled) {
-    scheduler.addSimpleIntervalJob(metricsJob)
-  }
-};
-
-startMetrics().catch(err => {
-  console.log("Error starting metrics client: " + err)
-})
-
-const onResponse = (req, res, next) => {
-  res.on("finish", () => {
-    if (metricsEnabled) reqCount++
-    const requestListCacheHit = res.getHeaders()['zenithproxy-cache'] !== undefined ? "ZHIT" : "ZMISS"
-    const apiCacheHit = res.getHeaders()['apicache-store'] !== undefined ? "HIT" : "MISS"
-    const cacheHit = requestListCacheHit === "ZHIT" ? requestListCacheHit : apiCacheHit
-    const agent = req.headers['user-agent'] || "?"
-    logT(`${res.statusCode} ${cacheHit} ${agent} ${req.url}`)
-  });
-  next();
+    try {
+      await metricsClient.addRequestCount(c);
+    } catch (err) {
+      logT("Error writing metrics: " + err);
+    }
+  }, 5 * 60 * 1000);
 }
 
-app.use(onResponse)
+async function onRequest(req, server) {
+  const limited = await rateLimit(clientIp(req, server));
+  if (limited) return limited;
 
-// Routes
-const routes = require('./routes');
-app.use('/', routes);
+  let response;
+  let cache = "MISS";
+  try {
+    ({ response, cache } = await handleRequest(req));
+  } catch (err) {
+    response = Response.json({ error: err.message }, { status: 500 });
+  }
 
-// Enable cors
-app.use(cors());
+  if (metricsEnabled) reqCount++;
+  const agent = req.headers.get("user-agent") || "?";
+  const url = new URL(req.url);
+  logT(`${response.status} ${cache} ${agent} ${url.pathname}${url.search}`);
+  return response;
+}
 
-// Error handler middleware
-app.use(errorHandler);
+async function listenForCommands() {
+  for await (const line of console) {
+    if (line.trim() === "u") {
+      logT("Updating release cache...");
+      updateReleaseCache();
+    }
+  }
+}
 
 async function startServer() {
-  const RELEASES_LIST_CACHE_ENABLED = process.env.RELEASES_LIST_CACHE !== undefined && process.env.RELEASES_LIST_CACHE === "true";
-  
+  if (metricsEnabled) startMetrics();
+
   if (RELEASES_LIST_CACHE_ENABLED) {
     logT("Waiting for initial release cache update...");
-    await routes.startReleaseCacheUpdater();
+    await startReleaseCacheUpdater();
     logT("Initial release cache update completed");
   }
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: false
+  listenForCommands().catch(err => logT("Error reading stdin: " + err));
+
+  Bun.serve({
+    port: PORT,
+    idleTimeout: 5,
+    fetch: onRequest,
+    error(err) {
+      return Response.json({ error: err.message }, { status: 500 });
+    },
   });
-  
-  rl.on('line', (line) => {
-    if (line.trim() === 'u') {
-      logT("Updating release cache...");
-      routes.updateReleaseCache();
-    }
-  });
-  
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  console.log(`Server running on port ${PORT}`);
 }
 
 startServer().catch(err => {

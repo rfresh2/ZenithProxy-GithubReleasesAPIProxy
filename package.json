@@ -2,28 +2,16 @@
   "name": "github-api-proxy",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index",
-    "dev": "nodemon"
+    "start": "bun index.js",
+    "dev": "bun --watch index.js"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "apicache": "^1.6.3",
-    "cors": "^2.8.5",
-    "diff": "^9.0.0",
-    "dotenv": "^18.0.0",
-    "express": "^5.2.1",
-    "express-rate-limit": "^8.5.1",
-    "express-slow-down": "^3.0.0",
-    "needle": "^3.2.0",
-    "node-cache": "^5.1.2",
-    "pg": "^8.11.3",
-    "toad-scheduler": "^4.0.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
+    "diff": "^9.0.0"
   }
 }
